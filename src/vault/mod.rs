@@ -802,13 +802,41 @@ impl VaultManager {
                 vault.to_string(),
             ));
         }
-        let dest_filename = new_filename.unwrap_or(filename);
         // An omitted `new_folder` means "leave the note where it is", not "move it
         // to the vault root". Reading it as the root silently turns a *rename*
         // into a relocation, and `prune_empty_parent` then deletes the folder the
         // note just left. An explicit `""` is how a caller asks for the root.
-        let dest_folder = new_folder.or(folder);
-        let dest = self.note_path(vault, dest_filename, dest_folder)?;
+        //
+        // "Where it is" is read off the source the call actually resolved, not
+        // off the `folder` hint: resolving it under the hint would re-create a
+        // `filename` that carries its own path one level deeper
+        // (`projects/projects/note.md`).
+        let stay_put = || src.parent().map(|p| rel_path(&root, p));
+        let dest = match new_filename {
+            // A `newFilename` with a directory part is already vault-absolute.
+            // Joining it under `new_folder` nests it inside a replica of the
+            // path it was meant to reach — `X/a/b/note.md` instead of `a/b.md`,
+            // and `X/a/b/` is never pruned, so it survives as a zombi folder
+            // (issue #317). The path wins; `new_folder` is ignored.
+            Some(name) if carries_path(name) => self.note_path(vault, name, None)?,
+            // A bare `newFilename`: the name changes, the folder is `new_folder`
+            // or, omitted, the one the note is in.
+            Some(name) => {
+                let dest_folder = new_folder.map(str::to_string).or_else(stay_put);
+                self.note_path(vault, name, dest_folder.as_deref())?
+            }
+            // Relocation only. The name comes from the source path's last
+            // component, so a `filename` that carries a path is not re-created
+            // inside the destination folder.
+            None => {
+                let name = src
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| filename.to_string());
+                let dest_folder = new_folder.map(str::to_string).or_else(stay_put);
+                self.note_path(vault, &name, dest_folder.as_deref())?
+            }
+        };
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| VaultError::io(parent.display().to_string(), e))?;
@@ -1214,6 +1242,16 @@ fn rel_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+/// True when a caller-supplied filename already carries its own directory part
+/// (`projects/apollo.md`, `./note.md`) instead of being a bare name. Both
+/// separators count: a Windows client sends `\` to a Unix server, and a name
+/// containing one is a path either way.
+fn carries_path(filename: &str) -> bool {
+    filename.contains('/')
+        || filename.contains('\\')
+        || Path::new(filename).components().count() > 1
 }
 
 /// Remove `note`'s parent directory if the just-completed operation left it
@@ -2893,6 +2931,83 @@ mod tests {
             .move_note(&name, "note", None, Some("sub"), None)
             .unwrap();
         assert!(dir.path().join("sub/note.md").exists());
+    }
+
+    #[test]
+    fn move_note_with_both_a_folder_and_a_bare_new_filename() {
+        // The everyday shape: a flat new name into a new folder.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "body");
+        vault
+            .move_note(&name, "note", None, Some("sub"), Some("renamed"))
+            .unwrap();
+        assert!(dir.path().join("sub/renamed.md").exists());
+    }
+
+    #[test]
+    fn a_new_filename_with_a_path_is_vault_absolute() {
+        // Regression for #317: `newFolder` used to be joined *in front of* a
+        // path-bearing `newFilename`, so the note landed in
+        // `dest/old/path/note.md` — nested inside a replica of its old path —
+        // and `dest/old/` was never pruned, surviving as a zombi folder.
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("old/path")).unwrap();
+        fs::write(dir.path().join("old/path/note.md"), "body").unwrap();
+
+        let out = vault
+            .move_note(
+                &name,
+                "old/path/note.md",
+                None,
+                Some("dest"),
+                Some("new/place/note.md"),
+            )
+            .unwrap();
+
+        assert_eq!(out.path, dir.path().join("new/place/note.md"));
+        assert!(dir.path().join("new/place/note.md").exists());
+        assert!(
+            !dir.path().join("dest").exists(),
+            "newFolder must not be re-created when newFilename carries its own path"
+        );
+        assert!(
+            !dir.path().join("old/path").exists(),
+            "the source folder is pruned"
+        );
+    }
+
+    #[test]
+    fn a_new_filename_with_a_path_moves_flat_without_a_new_folder() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "body");
+
+        let out = vault
+            .move_note(&name, "note", None, None, Some("sub/deep/note.md"))
+            .unwrap();
+
+        assert_eq!(out.path, dir.path().join("sub/deep/note.md"));
+        assert!(dir.path().join("sub/deep/note.md").exists());
+    }
+
+    #[test]
+    fn moving_a_note_whose_filename_has_a_path_does_not_nest_it_under_new_folder() {
+        // The same join bug on the other side: `folder` is a *locator*, so a
+        // `filename` that already carries the path must not be re-created
+        // inside the destination (`dest/projects/note.md`).
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        fs::create_dir_all(dir.path().join("projects")).unwrap();
+        fs::write(dir.path().join("projects/note.md"), "body").unwrap();
+
+        let out = vault
+            .move_note(&name, "projects/note.md", None, Some("dest"), None)
+            .unwrap();
+
+        assert_eq!(out.path, dir.path().join("dest/note.md"));
+        assert!(dir.path().join("dest/note.md").exists());
     }
 
     #[test]

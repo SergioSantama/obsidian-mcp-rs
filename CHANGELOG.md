@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.8.3] - 2026-11-12
+
+(Fork release — SergioSantama fork of MrRefactoring/obsidian-mcp-rs. Not
+published to npm; deployed as a native binary on both orcas.)
+
+### Fixed
+
+- **`move-note` no longer nests the note inside a replica of its path when
+  `newFilename` carries one.** A destination filename with a directory part
+  (`new/place/note.md`) is now resolved vault-absolute, as its own
+  documentation always claimed; `newFolder` is ignored instead of being joined
+  in front of it. Before, `move-note(newFolder: "dest", newFilename:
+  "old/path/note.md")` produced `dest/old/path/note.md` — the note buried one
+  level deeper and the `dest/old/` replica left behind as a zombi folder, since
+  `prune_empty_parent` only ever removes the source's own parent. Observed in
+  the vault (BrainVault #317, commits `c16a176f` / `0dff6979`).
+- **`move-note` reads "leave the note where it is" off the resolved source, not
+  off the `folder` hint**, so a `filename` that carries its own path is not
+  re-created one level deeper (`projects/projects/note.md`) when `newFolder` is
+  given.
+
+Regression tests cover the three shapes: bare name + `newFolder`, path-bearing
+`newFilename` with and without `newFolder`, and a path-bearing source
+`filename`.
+
 ## [0.8.2] - 2026-11-12
 
 (Fork release — SergioSantama fork of MrRefactoring/obsidian-mcp-rs; version
