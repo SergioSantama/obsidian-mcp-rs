@@ -1,0 +1,39 @@
+name: Build binaries
+
+# Fork-only build channel: produces the platform binaries for hosts without a
+# local Rust toolchain (orca-remoto gets linux-x64-musl from here) and attaches
+# them to the release of the dispatched tag. Upstream's release.yml needs
+# publishing secrets the fork does not ship; this one needs none.
+#
+# Usage (the ref must be a tag on master):
+#   gh workflow run build-binaries.yml --ref v0.8.2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.repository == 'SergioSantama/obsidian-mcp-rs'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Build linux-x64-musl
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/obsidian-mcp-rs obsidian-mcp-rs-linux-x64-musl
+          strip obsidian-mcp-rs-linux-x64-musl
+      - name: Attach to the tag's release (created if missing)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: obsidian-mcp-rs-linux-x64-musl
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
