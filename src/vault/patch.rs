@@ -258,13 +258,20 @@ pub(crate) fn find_and_replace(
     content: &str,
 ) -> Option<String> {
     let text = &note[region.span.clone()];
-    if !text.contains(search) {
-        return None;
-    }
+    let patched = if text.contains(search) {
+        text.replacen(search, content, 1)
+    } else {
+        // Byte-exact missed inside the region: allow one unique
+        // whitespace-tolerant match here too (see `flexible` — the needle can
+        // arrive with its line breaks mangled, BrainVault#314). `None` when the
+        // tolerant match is absent or ambiguous.
+        let span = super::flexible::flexible_find(text, search)?;
+        format!("{}{}{}", &text[..span.start], content, &text[span.end..])
+    };
     Some(format!(
         "{}{}{}",
         &note[..region.span.start],
-        text.replacen(search, content, 1),
+        patched,
         &note[region.span.end..]
     ))
 }

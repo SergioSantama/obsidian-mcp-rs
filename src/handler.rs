@@ -725,6 +725,30 @@ impl ServerHandler for ObsidianHandler {
             )
             .with_instructions(self.instructions())
     }
+
+    /// Route a tool call — after recovering arguments that arrived wrapped in
+    /// `__unparsedToolInput`.
+    ///
+    /// Writing this method by hand (instead of letting `#[tool_handler]`
+    /// generate it) adds exactly one step before the router: when the
+    /// arguments are the wrapper the API emits for tool input whose JSON
+    /// failed to parse upstream (an unquoted enum, a literal line break in a
+    /// string — BrainVault #160/#187/#49), `unparsed::recover` re-parses the
+    /// raw text leniently and swaps in the recovered arguments. Input that
+    /// was already strict JSON is untouched, and input that cannot be
+    /// recovered reaches the router as the wrapper the model sent, to fail
+    /// validation with its usual error.
+    async fn call_tool(
+        &self,
+        mut request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, McpError> {
+        if let Some(args) = request.arguments.as_mut() {
+            crate::unparsed::recover(args);
+        }
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
 }
 
 impl ObsidianHandler {

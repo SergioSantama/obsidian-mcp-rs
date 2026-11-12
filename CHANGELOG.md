@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.8.2] - 2026-11-12
+
+(Fork release — SergioSantama fork of MrRefactoring/obsidian-mcp-rs; version
+number continues upstream's series for auto-update-parser compatibility. The
+two fixes below are fork-only, not yet in upstream.)
+
+Fork-only release (SergioSantama/obsidian-mcp-rs, based on upstream 0.8.1).
+Not published to npm — deployed as a native binary. Two transport-resilience
+fixes for failure modes observed in the field where the *sent* tool input is
+not the *intended* input (diagnosis and repro: BrainVault
+[#314](https://github.com/SergioSantama/BrainVault/issues/314),
+[#160](https://github.com/SergioSantama/BrainVault/issues/160),
+[#187](https://github.com/SergioSantama/BrainVault/issues/187)).
+
+### Fixed
+
+- **`edit-note find_and_replace` now lands when the `search` needle was
+  mangled in transport.** The byte-exact `contains` path stays first and
+  unchanged. When it misses, exactly one *whitespace-tolerant* match (every
+  whitespace run in the needle may correspond to any whitespace run in the
+  note — `a\nb` still finds `a b` and `a\r\nb`) or one match of the needle
+  with literal `\n`/`\r`/`\t` escape pairs unescaped replaces that span;
+  an absent or ambiguous tolerant match edits nothing and reports the
+  usual error. Applies to the whole-note path and, region-confined, to
+  `targetType` edits. (BrainVault #314.)
+- **Tool calls that arrive wrapped in `__unparsedToolInput` are recovered
+  instead of rejected.** When the model's JSON for a call fails to parse
+  upstream (an enum value emitted without quotes — `view:outline` — or a
+  literal line break inside a string), the call reaches the server as
+  `{"__unparsedToolInput": "<raw text>"}` and used to die on "missing field".
+  `call_tool` now re-parses the raw text leniently (unquoted keys, unquoted
+  string values, literal control characters inside strings) and swaps in the
+  recovered arguments; unrecoverable input still fails with its usual clean
+  error. (BrainVault #160, #187.)
+
+### Added
+
+- `src/vault/flexible.rs` — the whitespace-tolerant fallback matcher.
+- `src/unparsed.rs` — the `__unparsedToolInput` recovery (two sanitizing
+  passes, then the strict parser stays the single authority).
+- A `toolchain/`-scoped build recipe is not committed; the fork is built with
+  a project-local Rust (GNU) toolchain, see the Brain project
+  `Proyectos/herramientas/brain-obsidian/`.
+
 ## [0.8.1] - 2026-10-24
 
 ### Changed

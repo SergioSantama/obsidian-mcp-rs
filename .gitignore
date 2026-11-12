@@ -8,3 +8,7 @@
 .DS_Store
 /npm/obsidian-mcp-rs/coverage
 lcov-*.info
+
+# SergioSantama fork: project-scoped Rust build toolchain + local repro driver
+toolchain/
+repro/

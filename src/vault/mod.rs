@@ -1,4 +1,5 @@
 mod cache;
+mod flexible;
 mod frontmatter;
 mod info;
 mod links;
@@ -612,13 +613,20 @@ impl VaultManager {
                 EditOperation::Replace => edit.content.to_string(),
                 EditOperation::FindAndReplace => {
                     let needle = needle()?;
-                    if !old.contains(needle) {
+                    if old.contains(needle) {
+                        old.replacen(needle, edit.content, 1)
+                    } else if let Some(span) = flexible::flexible_find(&old, needle) {
+                        // Byte-exact missed, but exactly one whitespace-tolerant
+                        // match exists: the needle was mangled in transport
+                        // (BrainVault#314 — a two-line `search` arriving with its
+                        // line break swapped for a space). Replace that span.
+                        format!("{}{}{}", &old[..span.start], edit.content, &old[span.end..])
+                    } else {
                         return Err(VaultError::SearchTextNotFound(
                             needle.to_string(),
                             filename.to_string(),
                         ));
                     }
-                    old.replacen(needle, edit.content, 1)
                 }
             },
             Some(target) => {
@@ -1546,6 +1554,187 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("search"));
+    }
+
+    // BrainVault#314: the needle the model sends can arrive with its line
+    // break swapped for another whitespace run (or with `\n` as the literal
+    // two characters). When the byte-exact path misses and the tolerant match
+    // is UNIQUE, the edit still lands; an ambiguous or absent match refuses.
+    #[test]
+    fn a_multiline_needle_mangled_into_a_space_still_lands() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "linea-A-uno\nlinea-A-dos\n");
+
+        let (_, new) = vault
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &edit(
+                    EditOperation::FindAndReplace,
+                    "reemplazo\nen dos lineas",
+                    Some("linea-A-uno linea-A-dos"),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(new, "reemplazo\nen dos lineas\n");
+    }
+
+    #[test]
+    fn a_literal_backslash_n_needle_still_lands() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "linea-A-uno\nlinea-A-dos\n");
+
+        let (_, new) = vault
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &edit(
+                    EditOperation::FindAndReplace,
+                    "nuevo",
+                    // The two characters backslash + n, not a line break.
+                    Some(r"linea-A-uno\nlinea-A-dos"),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(new, "nuevo\n");
+    }
+
+    #[test]
+    fn a_byte_exact_multiline_needle_matches_first_try() {
+        // The contract path: a correct two-line needle must not need the
+        // fallback at all (and the first occurrence rule must hold).
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "aa\nbb\naa\nbb\n");
+
+        let (_, new) = vault
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &edit(EditOperation::FindAndReplace, "X", Some("aa\nbb")),
+            )
+            .unwrap();
+
+        assert_eq!(new, "X\naa\nbb\n");
+    }
+
+    #[test]
+    fn an_ambiguous_tolerant_needle_refuses_to_edit() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "aa bb\naa\nbb\n");
+
+        // The needle is not literally present (double space), but the
+        // tolerant pattern `aa\s+bb` fits TWO places — edit nothing rather
+        // than guess.
+        let result = vault.edit_note(
+            &name,
+            "note",
+            None,
+            &edit(EditOperation::FindAndReplace, "X", Some("aa  bb")),
+        );
+
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("byte for byte"), "{err}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "aa bb\naa\nbb\n",
+            "an ambiguous tolerant match must not edit"
+        );
+    }
+
+    #[test]
+    fn a_genuinely_absent_needle_still_errors() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(&dir, "note.md", "hello world\n");
+
+        let result = vault.edit_note(
+            &name,
+            "note",
+            None,
+            &edit(EditOperation::FindAndReplace, "X", Some("hello\nmissing")),
+        );
+
+        assert!(result.unwrap_err().to_string().contains("byte for byte"));
+    }
+
+    #[test]
+    fn a_tolerant_hit_is_confined_to_the_targeted_region() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(
+            &dir,
+            "note.md",
+            "## Uno\n\nuno texto\n\n## Dos\n\ndos texto separado\n",
+        );
+
+        let (_, new) = vault
+            .edit_note(
+                &name,
+                "note",
+                None,
+                &Edit {
+                    operation: EditOperation::FindAndReplace,
+                    content: "dos texto",
+                    // The needle only tolerant-matches inside "## Dos": the
+                    // edit must not leak into "## Uno".
+                    search: Some("dos texto separado"),
+                    target: Some(Target {
+                        kind: &TargetKind::Heading,
+                        name: "Dos",
+                    }),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            new, "## Uno\n\nuno texto\n\n## Dos\n\ndos texto\n",
+            "the tolerant match must stay inside its region"
+        );
+    }
+
+    #[test]
+    fn a_tolerant_needle_outside_the_region_still_errors() {
+        let (dir, vault) = make_vault();
+        let name = vault_name(&dir);
+        write_note(
+            &dir,
+            "note.md",
+            "## Uno\n\nuno texto\n\n## Dos\n\ndos texto\n",
+        );
+
+        let result = vault.edit_note(
+            &name,
+            "note",
+            None,
+            &Edit {
+                operation: EditOperation::FindAndReplace,
+                content: "X",
+                // Tolerant-matches only in "## Uno", target is "Dos".
+                search: Some("uno texto"),
+                target: Some(Target {
+                    kind: &TargetKind::Heading,
+                    name: "Dos",
+                }),
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "a tolerant match outside the region must not edit"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "## Uno\n\nuno texto\n\n## Dos\n\ndos texto\n"
+        );
     }
 
     // An unknown operation can no longer reach the domain: `EditOperation` is a

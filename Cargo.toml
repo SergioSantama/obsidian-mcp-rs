@@ -1,12 +1,12 @@
 [package]
 name = "obsidian-mcp-rs"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Vladislav Tupikin"]
 description = "A fast, Rust-based MCP server for Obsidian vaults"
 license = "MIT"
-repository = "https://github.com/MrRefactoring/obsidian-mcp-rs"
+repository = "https://github.com/SergioSantama/obsidian-mcp-rs"
 homepage = "https://github.com/MrRefactoring/obsidian-mcp-rs"
 readme = "README.md"
 keywords = ["obsidian", "mcp", "notes", "vault", "ai"]
